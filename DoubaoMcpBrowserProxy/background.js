@@ -104,8 +104,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
                   if (content.creations && Array.isArray(content.creations)) {
                     // 处理每个图片创建结果（旧结构）
                     content.creations.forEach(creation => {
-                      if (creation.type === 1 && creation.image && creation.image.image_raw) {
-                        const imageUrl = creation.image.image_raw.url;
+                      if (creation.type === 1 && creation.image && creation.image.image_ori_raw) {
+                        const imageUrl = creation.image.image_ori_raw.url;
                         if (imageUrl) {
                           imageUrls.push(imageUrl);
                           console.log('Found image URL:', imageUrl);
