@@ -327,6 +327,12 @@ async def main_async():
 
             app_context.timeout_task(task.id)
             return json.dumps({"status": "error", "message": "Task timeout"}, ensure_ascii=False)
+        except asyncio.CancelledError:
+            logger.warning(f"Task cancelled for draw_image: {prompt}")
+            # 清理任务
+            if 'task' in locals():
+                app_context.timeout_task(task.id)
+            raise
         except Exception as e:
             logger.error(f"Error in draw_image: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": f"Internal error: {e}"}, ensure_ascii=False)
@@ -420,6 +426,12 @@ async def main_async():
 
             app_context.timeout_task(task.id)
             return json.dumps({"status": "error", "message": "Task timeout"}, ensure_ascii=False)
+        except asyncio.CancelledError:
+            logger.warning(f"Task cancelled for edit_image: {prompt}")
+            # 清理任务
+            if 'task' in locals():
+                app_context.timeout_task(task.id)
+            raise
         except Exception as e:
             logger.error(f"Error in edit_image: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": f"Internal error: {e}"}, ensure_ascii=False)
