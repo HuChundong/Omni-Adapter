@@ -2,15 +2,17 @@
 
 # DouBaoFreeImageGen
 
-DouBaoFreeImageGen 是一个基于 FastMCP 框架的智能文生图服务，通过浏览器插件与豆包客户端深度集成，提供高效的 MCP (Model Context Protocol) 服务接口，支持无限次调用豆包的文生图功能。
+DouBaoFreeImageGen 是一个基于 FastMCP 框架的智能图像生成服务，通过浏览器插件与豆包客户端深度集成，提供高效的 MCP (Model Context Protocol) 服务接口，支持无限次调用豆包的文生图和图生图功能。
 
 ## 核心特性
 
 - 🚀 **FastMCP 框架**：基于现代 MCP 协议，提供标准化的服务接口
+- 🎨 **双重生成模式**：支持文生图和图生图两种图像生成方式
 - 🔄 **多客户端支持**：支持多个浏览器实例同时连接，智能负载均衡
 - ⚡ **高效任务调度**：轮询算法分配任务，支持并发处理
 - 🛡️ **可靠性保障**：任务超时管理、自动重连、连接状态监控
-- 🎨 **图片管理**：内置图片收集、预览、批量下载功能
+- 📸 **智能图片处理**：自动图片上传、参考图片处理、图片比例调整
+- 🎯 **图片管理**：内置图片收集、预览、批量下载功能
 - 📊 **实时监控**：完整的连接状态和任务状态查询接口
 - 🔧 **灵活配置**：支持自动刷新、Cookie 管理等个性化设置
 
@@ -26,7 +28,8 @@ DouBaoFreeImageGen 是一个基于 FastMCP 框架的智能文生图服务，通�
 
 2. **浏览器插件** (`DoubaoMcpBrowserProxy/`)
    - Chrome 扩展，集成豆包客户端
-   - 自动化文生图指令输入
+   - 自动化文生图和图生图指令输入
+   - 智能图片上传和参考图片处理
    - 图片 URL 实时收集和监控
    - 用户界面增强功能
 
@@ -58,9 +61,11 @@ pip install -r requirements.txt
 ### 2. 安装浏览器插件
 
 #### 方法一：直接安装 (推荐)
+
 1. 将 `DoubaoMcpBrowserProxy.crx` 文件拖拽到浏览器扩展页面 (`chrome://extensions/`)
 
 #### 方法二：开发者模式安装
+
 1. 打开浏览器扩展页面 (`chrome://extensions/`)
 2. 开启右上角的"开发者模式"
 3. 点击"加载已解压的扩展程序"
@@ -70,12 +75,13 @@ pip install -r requirements.txt
 
 为获得最佳体验，建议在豆包客户端快捷方式中添加启动参数：
 
-```
+```bash
 "豆包客户端路径" --silent-debugger-extension-api
 ```
 
 示例：
-```
+
+```bash
 "C:\Program Files\Doubao\app\Doubao.exe" --silent-debugger-extension-api
 ```
 
@@ -99,18 +105,34 @@ python server.py
 #### 配置 MCP 服务地址
 
 在 MCP 客户端中配置服务地址：
-```
+
+```text
 http://192.168.2.192:8081/mcp
 ```
 
-#### 1. 文生图接口
+#### 1. 文生图工具
 
 **工具名称**: `draw_image`
 
+**功能**: 根据文本提示词生成图片
+
 **参数**:
-- `prompt` (string): 文生图提示词
+
+- `prompt` (string): 文生图提示词，描述你希望生成的图片内容
+- `ratio` (string, optional): 图片比例，默认为 "2:3"
+
+**支持的比例**:
+
+- "1:1" - 正方形
+- "2:3" - 竖版（默认）
+- "3:2" - 横版
+- "16:9" - 宽屏
+- "9:16" - 竖屏
+- "4:3" - 标准横版
+- "3:4" - 标准竖版
 
 **返回格式**:
+
 ```json
 {
     "status": "success",
@@ -118,28 +140,41 @@ http://192.168.2.192:8081/mcp
 }
 ```
 
-**使用示例**:
-```python
-import requests
+#### 2. 图生图工具
 
-# 调用文生图接口
-response = requests.post(
-    'http://localhost:8081/tools/draw_image',
-    json={'prompt': '一只可爱的小猫在花园里玩耍'}
-)
+**工具名称**: `edit_image`
 
-result = response.json()
-if result['status'] == 'success':
-    print(f"生成了 {len(result['image_urls'])} 张图片")
-    for url in result['image_urls']:
-        print(f"图片地址: {url}")
+**功能**: 根据参考图片和文本提示词生成或编辑图片
+
+**参数**:
+
+- `prompt` (string): 图片编辑的文本描述，描述你希望对参考图片进行的修改
+- `reference_picture` (string): 参考图片的网络地址URL，必须是可访问的HTTP或HTTPS链接
+- `ratio` (string, optional): 生成图片的宽高比例，默认为 "2:3"
+
+**返回格式**:
+
+```json
+{
+    "status": "success",
+    "image_urls": ["https://...", "https://..."]
+}
 ```
 
-#### 2. 连接状态查询
+**注意事项**:
+
+- `reference_picture` 必须是有效的图片URL，支持常见格式：jpg, jpeg, png, gif, webp
+- 图片URL必须是公开可访问的，不能需要认证
+- 建议图片大小不超过10MB，分辨率建议在1024x1024以内
+
+#### 3. 连接状态查询工具
 
 **工具名称**: `get_connection_status`
 
+**功能**: 获取服务器连接状态和任务信息
+
 **返回信息**:
+
 - 连接的客户端数量和状态
 - 当前任务队列情况
 - 系统运行状态
@@ -147,17 +182,21 @@ if result['status'] == 'success':
 ### 浏览器插件功能
 
 #### 自动化操作
-- 自动接收 MCP 服务器发送的文生图指令
-- 模拟用户在豆包客户端中输入提示词
+
+- 自动接收 MCP 服务器发送的文生图和图生图指令
+- 智能图片上传：自动下载并上传参考图片到豆包客户端
+- 模拟用户在豆包客户端中输入提示词和图片比例
 - 实时监控生成的图片并收集 URL
 
 #### 图片管理
+
 - **实时预览**: 弹窗显示所有收集到的图片
 - **单独下载**: 选择特定图片进行下载
 - **批量下载**: 一键下载所有图片
 - **列表管理**: 清空图片列表，重新开始收集
 
 #### 个性化设置
+
 在插件选项页面 (`chrome://extensions/` → 插件详情 → 扩展程序选项) 中可配置：
 
 - **自动刷新**: 任务完成后是否自动刷新页面
@@ -176,70 +215,18 @@ WS_PORT = 8080           # WebSocket 端口
 MCP_PORT = 8081          # MCP 服务端口
 
 # 任务配置
-DEFAULT_TIMEOUT = 60.0   # 默认任务超时时间(秒)
+DEFAULT_TIMEOUT = 120.0  # 默认任务超时时间(秒)
 MAX_TASKS = 50          # 任务队列最大长度
 ```
 
 ### 任务管理策略
 
 - **轮询负载均衡**: 任务自动分配给空闲客户端
-- **超时保护**: 60秒任务超时，自动释放资源
+- **超时保护**: 120秒任务超时，自动释放资源
 - **状态监控**: 实时监控客户端连接和任务状态
 - **异常恢复**: 客户端断开时自动清理相关任务
-
-## API 详细文档
-
-### MCP Tools
-
-#### `draw_image`
-生成图片的核心工具
-
-**参数验证**:
-- `prompt` 不能为空或仅包含空白字符
-- 需要至少一个空闲的浏览器客户端连接
-
-**处理流程**:
-1. 验证输入参数
-2. 检查可用客户端
-3. 创建任务并分配给空闲客户端
-4. 发送指令到浏览器
-5. 等待图片生成完成
-6. 返回图片 URL 列表
-
-**错误处理**:
-- 无可用客户端: `"No idle WebSocket clients available"`
-- 任务超时: `"Task timeout"`
-- 客户端断开: `"Task cancelled due to client disconnect"`
-
-#### `get_connection_status`
-获取系统状态信息
-
-**返回数据结构**:
-```json
-{
-    "total_clients": 2,
-    "clients": [
-        {
-            "id": "client-uuid",
-            "connected": true,
-            "status": "idle",
-            "current_task": null,
-            "last_active": 1703123456.789,
-            "url": "https://www.doubao.com/chat/"
-        }
-    ],
-    "total_tasks": 5,
-    "tasks": [
-        {
-            "id": "task-uuid",
-            "client_id": "client-uuid", 
-            "status": "completed",
-            "create_time": 1703123456.789,
-            "image_count": 3
-        }
-    ]
-}
-```
+- **图片处理**: 自动下载参考图片并上传到豆包客户端
+- **比例控制**: 支持多种图片比例，满足不同场景需求
 
 ## 故障排除
 
@@ -263,12 +250,14 @@ MAX_TASKS = 50          # 任务队列最大长度
 ### 日志调试
 
 查看服务器日志：
+
 ```bash
 # 服务器日志会显示详细的连接和任务信息
 python server.py
 ```
 
 查看浏览器控制台：
+
 ```javascript
 // 在豆包页面按F12，查看Console输出
 // 搜索 "[Script]" 或 "[WebSocket]" 相关日志
@@ -279,9 +268,10 @@ python server.py
 ### 使用须知
 
 ⚠️ **重要提示**：
+
 1. **隐私保护**: 插件会自动清除 Cookie，每次使用都是匿名状态
 2. **页面刷新**: 为确保功能正常，插件可能会自动刷新豆包页面
-3. **单任务限制**: 每个客户端同时只能处理一个文生图任务
+3. **单任务限制**: 每个客户端同时只能处理一个图像生成任务
 4. **网络依赖**: 需要稳定的网络连接以确保服务正常
 
 ### 法律与合规
@@ -300,7 +290,8 @@ python server.py
 ## 开发指南
 
 ### 项目结构
-```
+
+```text
 DouBaoFreeImageGen/
 ├── McpServer/              # MCP 服务器
 │   ├── server.py          # 主服务文件
@@ -310,7 +301,7 @@ DouBaoFreeImageGen/
 │   ├── manifest.json     # 插件配置
 │   ├── content.js        # 内容脚本
 │   ├── background.js     # 后台脚本
-│   └── options.html      # 设置页面
+│   └── settings-panel.js # 设置面板
 └── README.md
 ```
 

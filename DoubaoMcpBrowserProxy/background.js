@@ -167,13 +167,15 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
   }
 });
 
-// --- WebSocket Logic ---
+// ==================== WebSocket 管理 ====================
 const DEFAULT_WEBSOCKET_URL = 'ws://localhost:8080';
 const RECONNECT_DELAY_MS = 5000;
+
+// WebSocket 状态
 let ws = null;
 let reconnectTimeout = null;
 
-// 多tab管理
+// ==================== 标签页管理 ====================
 let doubaoTabs = new Map(); // tabId -> { id, url, status: 'idle' | 'busy', lastUsed: timestamp }
 let taskQueue = []; // 任务队列
 let currentTabIndex = 0; // 轮询索引
@@ -243,16 +245,27 @@ function dispatchTask(task) {
 }
 
 function sendTaskToTab(tabId, task) {
-  chrome.tabs.sendMessage(tabId, {
-    type: 'COMMAND_FROM_SERVER',
-    data: task
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error(`[TaskManager] Failed to send task to tab ${tabId}:`, chrome.runtime.lastError);
-      // 如果发送失败，将tab标记为空闲并重新分发任务
-      setTabStatus(tabId, 'idle');
+  // 先检查tab是否还存在
+  chrome.tabs.get(tabId, (tab) => {
+    if (chrome.runtime.lastError || !tab) {
+      console.error(`[TaskManager] Tab ${tabId} no longer exists:`, chrome.runtime.lastError);
+      removeDoubaoTab(tabId);
       processTaskQueue();
+      return;
     }
+    
+    // 发送任务到tab
+    chrome.tabs.sendMessage(tabId, {
+      type: 'COMMAND_FROM_SERVER',
+      data: task
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error(`[TaskManager] Failed to send task to tab ${tabId}:`, chrome.runtime.lastError);
+        // 如果发送失败，将tab标记为空闲并重新分发任务
+        setTabStatus(tabId, 'idle');
+        processTaskQueue();
+      }
+    });
   });
 }
 
@@ -273,95 +286,155 @@ function onTaskCompleted(tabId) {
   processTaskQueue(); // 处理队列中的任务
 }
 
+/**
+ * 建立WebSocket连接
+ */
 function connectWebSocket() {
+    // 防止重复连接
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
-        console.log("[WebSocket] Connection already connecting or open.");
+        console.log("[WebSocket] Connection already active");
         return;
     }
 
     chrome.storage.sync.get(['wsUrl'], (result) => {
         const websocketUrl = result.wsUrl || DEFAULT_WEBSOCKET_URL;
-        console.log(`[WebSocket] Attempting to connect to ${websocketUrl}`);
+        console.log(`[WebSocket] Connecting to ${websocketUrl}`);
 
         try {
             ws = new WebSocket(websocketUrl);
-
-            ws.onopen = () => {
-                console.log("[WebSocket] Connected successfully.");
-                clearTimeout(reconnectTimeout);
-                reconnectTimeout = null;
-                
-                // 通知所有tab连接已建立
-                const allTabs = getAllDoubaoTabs();
-                allTabs.forEach(tab => {
-                    chrome.tabs.get(tab.id, (tabInfo) => {
-                        if (tabInfo) {
-                            sendWebSocketMessage({ type: 'scriptReady', url: tabInfo.url, tabId: tab.id });
-                        }
-                    });
-                });
-            };
-
-            ws.onmessage = (event) => {
-                console.log("[WebSocket] Message from server:", event.data);
-                
-                try {
-                    const message = JSON.parse(event.data);
-                    
-                    // 如果消息指定了特定的tabId
-                    if (message.targetTabId && doubaoTabs.has(message.targetTabId)) {
-                        sendTaskToTab(message.targetTabId, event.data);
-                    } else {
-                        // 使用轮询策略分发任务
-                        dispatchTask(event.data);
-                    }
-                } catch (e) {
-                    // 如果不是JSON格式，直接分发
-                    dispatchTask(event.data);
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.warn("[WebSocket] Error:", error);
-                ws.close();
-            };
-
-            ws.onclose = (event) => {
-                console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason}).`);
-                ws = null;
-                if (!event.wasClean) {
-                    scheduleReconnect();
-                }
-            };
-
+            setupWebSocketHandlers();
         } catch (e) {
-            console.error("[WebSocket] Failed to create WebSocket instance:", e);
+            console.error("[WebSocket] Connection failed:", e);
             scheduleReconnect();
         }
     });
 }
 
+/**
+ * 设置WebSocket事件处理器
+ */
+function setupWebSocketHandlers() {
+    ws.onopen = handleWebSocketOpen;
+    ws.onmessage = handleWebSocketMessage;
+    ws.onerror = handleWebSocketError;
+    ws.onclose = handleWebSocketClose;
+}
+
+/**
+ * WebSocket连接成功处理
+ */
+function handleWebSocketOpen() {
+    console.log("[WebSocket] Connected successfully");
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+    
+    // 通知所有豆包标签页连接已建立
+    notifyAllTabsConnectionReady();
+}
+
+/**
+ * WebSocket消息处理
+ */
+function handleWebSocketMessage(event) {
+    console.log("[WebSocket] Received:", event.data);
+    
+    try {
+        const message = JSON.parse(event.data);
+        
+        // 如果指定了目标标签页，直接发送到该标签页
+        if (message.targetTabId && doubaoTabs.has(message.targetTabId)) {
+            sendTaskToTab(message.targetTabId, event.data);
+        } else {
+            // 否则使用轮询策略分发任务
+            dispatchTask(event.data);
+        }
+    } catch (e) {
+        // 非JSON消息直接分发
+        dispatchTask(event.data);
+    }
+}
+
+/**
+ * WebSocket错误处理
+ */
+function handleWebSocketError(error) {
+    console.warn("[WebSocket] Error:", error);
+    // 让onclose处理连接关闭
+}
+
+/**
+ * WebSocket连接关闭处理
+ */
+function handleWebSocketClose(event) {
+    console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason})`);
+    ws = null;
+    scheduleReconnect();
+}
+
+/**
+ * 通知所有豆包标签页连接已就绪
+ */
+function notifyAllTabsConnectionReady() {
+    const allTabs = getAllDoubaoTabs();
+    allTabs.forEach(tab => {
+        chrome.tabs.get(tab.id, (tabInfo) => {
+            if (tabInfo) {
+                sendWebSocketMessage({ 
+                    type: 'scriptReady', 
+                    url: tabInfo.url, 
+                    tabId: tab.id 
+                });
+            }
+        });
+    });
+}
+
+/**
+ * 调度重连
+ */
 function scheduleReconnect() {
     if (reconnectTimeout === null) {
         console.log(`[WebSocket] Scheduling reconnect in ${RECONNECT_DELAY_MS}ms...`);
         reconnectTimeout = setTimeout(() => {
+            console.log("[WebSocket] Executing reconnect...");
             reconnectTimeout = null;
             connectWebSocket();
         }, RECONNECT_DELAY_MS);
+    } else {
+        console.log("[WebSocket] Reconnect already scheduled");
     }
 }
 
+/**
+ * 发送WebSocket消息
+ */
 function sendWebSocketMessage(data) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-            const message = typeof data === 'object' ? JSON.stringify(data) : String(data);
-            ws.send(message);
-        } catch (e) {
-            console.error("[WebSocket] Failed to send message:", data, e);
-        }
-    } else {
-        console.warn("[WebSocket] Cannot send message, WebSocket is not OPEN. Message:", data);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn("[WebSocket] Cannot send message, connection not open");
+        return false;
     }
+
+    try {
+        const message = typeof data === 'object' ? JSON.stringify(data) : String(data);
+        ws.send(message);
+        return true;
+    } catch (e) {
+        console.error("[WebSocket] Failed to send message:", e);
+        return false;
+    }
+}
+
+/**
+ * 获取WebSocket连接状态
+ */
+function getWebSocketStatus() {
+    if (!ws) return { connected: false, state: 'disconnected' };
+    
+    const states = ['connecting', 'open', 'closing', 'closed'];
+    return {
+        connected: ws.readyState === WebSocket.OPEN,
+        state: states[ws.readyState] || 'unknown'
+    };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -369,6 +442,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log('[Background] Received collected image URLs from content script:', message.urls);
         sendWebSocketMessage({ 
             type: 'collectedImageUrls', 
+            commandId: message.commandId, // 添加commandId支持
             urls: message.urls,
             tabId: sender.tab.id
         });
@@ -383,6 +457,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             setTabStatus(sender.tab.id, message.status);
         }
         sendResponse({ success: true });
+    } else if (message.type === 'ERROR_FROM_CONTENT') {
+        // content script报告错误
+        console.error(`[Background] Error from tab ${sender.tab.id}:`, message.error);
+        sendWebSocketMessage({
+            type: 'error',
+            commandId: message.error.details?.commandId,
+            errorDetails: message.error.message,
+            tabId: sender.tab.id
+        });
+        sendResponse({ success: true });
     } else if (message.type === 'GET_TAB_STATUS') {
         // 获取所有tab状态
         const tabStatus = getAllDoubaoTabs().map(tab => ({
@@ -391,10 +475,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             lastUsed: tab.lastUsed,
             url: tab.url
         }));
+        
+        const wsStatus = getWebSocketStatus();
         sendResponse({ 
             tabs: tabStatus, 
             queueLength: taskQueue.length,
-            wsConnected: ws && ws.readyState === WebSocket.OPEN
+            wsConnected: wsStatus.connected,
+            wsState: wsStatus.state
         });
         return true;
     } else if (message.type === 'FORCE_TASK_DISPATCH') {
@@ -407,6 +494,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         return true;
     }
+});
+
+// 处理插件图标点击事件
+chrome.action.onClicked.addListener(async (tab) => {
+  console.log(`[Action] Plugin icon clicked on tab ${tab.id}`);
+  
+  try {
+    // 检查是否在豆包页面
+    if (tab.url && tab.url.includes('doubao.com')) {
+      // 注入设置面板到当前页面
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['settings-panel.js']
+      });
+      console.log(`[Action] Settings panel injected into tab ${tab.id}`);
+    } else {
+      // 如果不是豆包页面，打开新标签页
+      chrome.tabs.create({ url: 'https://www.doubao.com' });
+    }
+  } catch (error) {
+    console.error('[Action] Error injecting settings panel:', error);
+  }
 });
 
 // 为所有标签页附加调试器
@@ -446,15 +555,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (doubaoTabs.has(tabId)) {
     removeDoubaoTab(tabId);
     
-    // 如果没有剩余的豆包tab，关闭WebSocket
+    // 如果没有剩余的豆包tab，关闭WebSocket但保持重连机制
     if (doubaoTabs.size === 0) {
       if (ws) {
+        console.log("[WebSocket] Closing connection (no more Doubao tabs)");
         ws.close();
       }
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-      taskQueue = []; // 清空任务队列
-      currentTabIndex = 0; // 重置轮询索引
+      // 保持重连机制工作，清空任务队列
+      taskQueue = [];
+      currentTabIndex = 0;
+      console.log("[WebSocket] Keeping reconnection active");
     }
   }
   

@@ -4,12 +4,12 @@ const originalReplaceState = history.replaceState;
 
 history.pushState = function () {
   originalPushState.apply(this, arguments);
-  chrome.runtime.sendMessage({ type: "NAVIGATION" });
+  safeSendMessage({ type: "NAVIGATION" });
 };
 
 history.replaceState = function () {
   originalReplaceState.apply(this, arguments);
-  chrome.runtime.sendMessage({ type: "NAVIGATION" });
+  safeSendMessage({ type: "NAVIGATION" });
 };
 
 // 监听 location.href 修改
@@ -17,19 +17,52 @@ let lastHref = location.href;
 new MutationObserver(() => {
   if (location.href !== lastHref) {
     lastHref = location.href;
-    chrome.runtime.sendMessage({ type: "NAVIGATION" });
+    safeSendMessage({ type: "NAVIGATION" });
   }
 }).observe(document, { subtree: true, childList: true });
 
 // 监听 hashchange 事件
 window.addEventListener("hashchange", () => {
-  chrome.runtime.sendMessage({ type: "NAVIGATION" });
+  safeSendMessage({ type: "NAVIGATION" });
 });
 
 // --- Configuration ---
 const CHAT_INPUT_SELECTOR = '[data-testid="chat_input_input"]';
 const UPLOAD_FILE_INPUT_SELECTOR = '[data-testid="upload-file-input"]';
 const INPUT_SEND_DELAY_MS = 200;
+
+// --- Extension Context Management ---
+let extensionContextValid = true;
+
+// 检查扩展上下文是否有效
+function isExtensionContextValid() {
+  try {
+    // 尝试访问chrome.runtime，如果扩展上下文失效会抛出异常
+    return chrome.runtime && chrome.runtime.id;
+  } catch (error) {
+    extensionContextValid = false;
+    return false;
+  }
+}
+
+// 安全的发送消息函数
+function safeSendMessage(message, callback) {
+  if (!isExtensionContextValid()) {
+    console.warn("[ExtensionContext] Extension context invalid, skipping message:", message.type);
+    return;
+  }
+  
+  try {
+    if (callback) {
+      chrome.runtime.sendMessage(message, callback);
+    } else {
+      chrome.runtime.sendMessage(message);
+    }
+  } catch (error) {
+    console.error("[ExtensionContext] Failed to send message:", error);
+    extensionContextValid = false;
+  }
+}
 const IMAGE_COLLECTION_SETTLE_DELAY_MS = 1500;
 
 // --- Global State ---
@@ -37,8 +70,9 @@ const processedUrls = new Set();
 const foundImageUrls = [];
 const downloadImageUrls = []; // 用于下载的独立图片列表
 let imageCollectionTimer = null;
+let currentCommandId = null; // 当前命令ID
 let shouldAutoReload = true; // 默认开启自动刷新
-let shouldClearCookies = true; // 默认清除cookie
+let shouldClearCookies = false; // 默认不清除cookie
 let downloadButton = null; // 下载按钮引用
 
 // 监听来自background.js的消息
@@ -70,39 +104,67 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log(
       `[Message Handler] Received command from background: "${message.data}"`
     );
-    // 这里需要优化一下，收到的命令转换为json？如果有参考图，那么需要把参考图同步上传
-    handleReceivedCommand(message.data);
+    try {
+      const command = JSON.parse(message.data);
+      if (command.task_type === "image" && command.prompt) {
+        handleGenerateImageCommand(command);
+      } else {
+        console.warn("[Message Handler] Received unsupported command format:", command);
+        sendErrorToBackground("Unsupported command format", command);
+        notifyTaskCompleted();
+      }
+    } catch (e) {
+      console.error("[Message Handler] Failed to parse command JSON:", e, message.data);
+      sendErrorToBackground("Failed to parse command JSON.", { error: e.message, data: message.data });
+      notifyTaskCompleted();
+    }
   }
 });
 
 // 通知background script任务完成
 function notifyTaskCompleted() {
-  chrome.runtime.sendMessage({ type: "TASK_COMPLETED" }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error(
-        "[TaskManager] Error notifying task completion:",
-        chrome.runtime.lastError
-      );
-    } else {
-      console.log(
-        "[TaskManager] Task completion notification sent successfully"
-      );
+  safeSendMessage({ type: "TASK_COMPLETED" }, (response) => {
+    try {
+      if (chrome.runtime.lastError) {
+        console.error(
+          "[TaskManager] Error notifying task completion:",
+          chrome.runtime.lastError
+        );
+      } else {
+        console.log(
+          "[TaskManager] Task completion notification sent successfully"
+        );
+      }
+    } catch (callbackError) {
+      console.error("[TaskManager] Callback error:", callbackError);
     }
+  });
+}
+
+// 向background script发送错误信息
+function sendErrorToBackground(message, details = {}) {
+  safeSendMessage({
+    type: "ERROR_FROM_CONTENT",
+    error: { message, details }
   });
 }
 
 // 更新tab状态
 function updateTabStatus(status) {
-  chrome.runtime.sendMessage(
+  safeSendMessage(
     { type: "TAB_STATUS_UPDATE", status: status },
     (response) => {
-      if (chrome.runtime.lastError) {
-        console.error(
-          "[TaskManager] Error updating tab status:",
-          chrome.runtime.lastError
-        );
-      } else {
-        console.log(`[TaskManager] Tab status updated to ${status}`);
+      try {
+        if (chrome.runtime.lastError) {
+          console.error(
+            "[TaskManager] Error updating tab status:",
+            chrome.runtime.lastError
+          );
+        } else {
+          console.log(`[TaskManager] Tab status updated to ${status}`);
+        }
+      } catch (callbackError) {
+        console.error("[TaskManager] Callback error:", callbackError);
       }
     }
   );
@@ -151,20 +213,25 @@ function performSendAndCleanup() {
   );
   imageCollectionTimer = null;
 
-  // WebSocket逻辑已移除，这里可以通过chrome.runtime.sendMessage或其他方式与background通信
+  // 发送图片URL到background
   if (foundImageUrls.length > 0) {
     console.log(
       `[Cleanup] Sending ${foundImageUrls.length} collected image URLs.`
     );
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: "COLLECTED_IMAGE_URLS",
+      commandId: currentCommandId, // 添加commandId支持
       urls: foundImageUrls,
     });
   } else {
     console.log(
       "[Cleanup] No image URLs were collected during this session. Sending empty list."
     );
-    chrome.runtime.sendMessage({ type: "COLLECTED_IMAGE_URLS", urls: [] });
+    safeSendMessage({ 
+      type: "COLLECTED_IMAGE_URLS", 
+      commandId: currentCommandId, // 添加commandId支持
+      urls: [] 
+    });
   }
 
   setTimeout(() => {
@@ -200,52 +267,64 @@ function performSendAndCleanup() {
 }
 
 // --- Input Handling ---
-function findChatInput() {
+// 专门使用 data-testid="chat_input_input" 的元素查找函数
+function findChatInputWithRetry() {
   const element = document.querySelector(CHAT_INPUT_SELECTOR);
+  
   if (element && element.tagName === "TEXTAREA") {
     return element;
   }
+  
   return null;
 }
 
-function findUploadFileInput() {
-  const element = document.querySelector(UPLOAD_FILE_INPUT_SELECTOR);
-  if (element /*  && element.tagName === 'TEXTAREA' */) {
+function findChatInput() {
+  const element = document.querySelector(CHAT_INPUT_SELECTOR);
+  
+  if (element && element.tagName === "TEXTAREA") {
     return element;
   }
+  
   return null;
 }
 
-async function handleReceivedCommand(commandText) {
-  // 开始处理任务，更新状态为忙碌
+// 专门使用 data-testid="upload-file-input" 的元素查找函数
+function findUploadFileInput() {
+  return document.querySelector(UPLOAD_FILE_INPUT_SELECTOR);
+}
+
+// 核心函数：处理从后台接收到的文生图命令
+async function handleGenerateImageCommand(command) {
   updateTabStatus("busy");
+  
+  // 保存当前命令ID
+  currentCommandId = command.commandId;
 
-  const inputElement = findChatInput();
-
+  const inputElement = findChatInputWithRetry();
   if (!inputElement) {
-    console.error(
-      "[Input] Chat input TEXTAREA element not found using selector:",
-      CHAT_INPUT_SELECTOR
-    );
-    // WebSocket逻辑已移除，这里可以通过chrome.runtime.sendMessage或其他方式与background通信
-    chrome.runtime.sendMessage({
-      type: "error",
-      message: "Chat input textarea element not found",
-    });
-    // 任务失败，恢复为空闲状态
+    console.error("[Input] Chat input element not found.");
+    sendErrorToBackground("Chat input element not found.", { commandId: currentCommandId });
     updateTabStatus("idle");
+    notifyTaskCompleted();
     return;
   }
 
-  console.log(
-    `[Input] Received command: "${commandText}". Attempting to simulate typing and send.`
-  );
+  console.log(`[Input] Processing command: ${command.prompt}`);
 
   try {
     inputElement.focus();
-    console.log("[Input] Focused the textarea element.");
+    
+    // 如果有参考图片，先上传并等待完成
+    if (command.file && command.imageUrl) {
+      await upload_files(command.imageUrl);
+      await waitForUploadComplete();
+      // 上传完成后额外等待1秒
+      await new Promise(r => setTimeout(r, 1000));
+    }
 
-    const newValue = commandText;
+    // 使用原有的文本输入和发送逻辑，并添加比例信息
+    const ratioText = command.ratio ? `，图片比例为${command.ratio}` : '';
+    const newValue = command.prompt + ratioText;
 
     try {
       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
@@ -254,24 +333,13 @@ async function handleReceivedCommand(commandText) {
       ).set;
       if (nativeInputValueSetter) {
         nativeInputValueSetter.call(inputElement, newValue);
-        console.log(
-          "Successfully set input value using native setter:",
-          newValue
-        );
       } else {
         inputElement.value = newValue;
-        console.warn(
-          "Native value setter not available. Set input value using direct assignment as a fallback."
-        );
       }
     } catch (e) {
-      console.error(
-        "Error setting input value using native setter or direct assignment:",
-        e
-      );
+      console.error("Error setting input value:", e);
       if (inputElement.value !== newValue) {
         inputElement.value = newValue;
-        console.warn("Forced input value setting after error.");
       }
     }
 
@@ -281,55 +349,93 @@ async function handleReceivedCommand(commandText) {
     });
 
     inputElement.dispatchEvent(inputEvent);
-    console.log("Simulated 'input' event dispatched.");
 
-    setTimeout(() => {
-      const enterEvent = new KeyboardEvent("keydown", {
-        bubbles: true,
-        cancelable: true,
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-      });
-
-      const dispatched = inputElement.dispatchEvent(enterEvent);
-      console.log(
-        `[Input] Dispatched 'keydown' (Enter) after delay. Event cancellation status: ${!dispatched}.`
-      );
-
-      // 任务完成通知
-      setTimeout(() => {
-        notifyTaskCompleted();
-      }, 1000); // 给一些时间让输入完成
+    setTimeout(async () => {
+      await sendMessageWithRetry(inputElement, newValue);
     }, INPUT_SEND_DELAY_MS);
   } catch (e) {
-    console.error("[Input] Error during input simulation:", e);
-    // WebSocket逻辑已移除，这里可以通过chrome.runtime.sendMessage或其他方式与background通信
-    chrome.runtime.sendMessage({
-      type: "error",
-      message: "Input simulation failed",
-      error: e.message,
-    });
-    // 任务失败，恢复为空闲状态
+    console.error("[Input] Error during command execution:", e);
+    sendErrorToBackground("Command execution failed.", { error: e.message, command: command, commandId: currentCommandId });
     updateTabStatus("idle");
+    notifyTaskCompleted();
   }
 }
 
+// 发送消息并重试
+async function sendMessageWithRetry(inputElement, expectedValue) {
+  const maxRetries = 2;
+  let retryCount = 0;
+  
+  while (retryCount <= maxRetries) {
+    const enterEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13,
+      which: 13,
+    });
+
+    inputElement.dispatchEvent(enterEvent);
+    await new Promise(r => setTimeout(r, 1000));
+    
+    const currentValue = inputElement.value.trim();
+    if (currentValue === "" || currentValue !== expectedValue) {
+      return true;
+    }
+    
+    retryCount++;
+    if (retryCount <= maxRetries) {
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  
+  return false;
+}
+
+// 等待图片上传完成
+async function waitForUploadComplete() {
+  const maxWaitTime = 30000;
+  const checkInterval = 500;
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    const progressElement = document.querySelector('.semi-progress-circle');
+    
+    if (!progressElement) {
+      await new Promise(r => setTimeout(r, 1000));
+      return true;
+    }
+    
+    await new Promise(r => setTimeout(r, checkInterval));
+  }
+  
+  return false;
+}
+
 async function upload_files(url) {
-  const inputElement = findUploadFileInput();
-  if (!inputElement) {
-    console.log("[AutoUpload] 没有找到文件输入框");
+  if (!url || url.length == 0) {
     return;
   }
-  if (url == undefined || url.length == 0) {
+  
+  let inputElement = findUploadFileInput();
+  
+  if (!inputElement) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    inputElement = findUploadFileInput();
+  }
+  
+  if (!inputElement) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    inputElement = findUploadFileInput();
+  }
+  
+  if (!inputElement) {
     return;
   }
   // url = 'https://p3-flow-imagex-sign.byteimg.com/tos-cn-i-a9rns2rl98/rc/pc/creation_agent/f39b78a9f10f44cab6aa2810ad31323a~tplv-a9rns2rl98-image-dark-watermark.png?rk3s=8e244e95&rrcfp=5057214b&x-expires=2068132585&x-signature=hc%2Fhayt1rB8W2InwKNsjLQXSnSI%3D'
   try {
-    // todo 判断一下是否是远程文件地址，如果不是直接return
-    const fileUrl = url;
-    const response = await fetch(fileUrl);
+    const response = await fetch(url);
     if (!response.ok) throw new Error("图片下载失败");
     const blob = await response.blob();
     const file = new File([blob], "auto-upload.png", { type: "image/png" });
@@ -338,39 +444,97 @@ async function upload_files(url) {
     dataTransfer.items.add(file);
     inputElement.files = dataTransfer.files;
 
-    // 触发 change/input 事件
     inputElement.dispatchEvent(new Event("change", { bubbles: true }));
     inputElement.dispatchEvent(new Event("input", { bubbles: true }));
-
-    console.log("[AutoUpload] 图片已自动填入文件输入框");
   } catch (e) {
     console.error("[AutoUpload] 自动上传图片失败:", e);
   }
 }
 // --- Initialization ---
 
+// 监控两个目标元素的监控器
+function startElementWatcher() {
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      if (mutation.type === 'childList') {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const dataTestId = node.getAttribute ? node.getAttribute('data-testid') : null;
+            
+            if (dataTestId === 'chat_input_input' || dataTestId === 'upload-file-input') {
+              // 目标元素已找到
+            }
+            
+            if (node.querySelectorAll) {
+              const chatInputElements = node.querySelectorAll('[data-testid="chat_input_input"]');
+              const uploadElements = node.querySelectorAll('[data-testid="upload-file-input"]');
+              
+              if (chatInputElements.length > 0 || uploadElements.length > 0) {
+                // 子元素中找到目标元素
+              }
+            }
+          }
+        });
+      }
+    });
+  });
+  
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+  
+  return observer;
+}
+
+// 立即检查目标元素是否存在
+function checkElementImmediately() {
+  const chatInputElement = document.querySelector(CHAT_INPUT_SELECTOR);
+  if (chatInputElement) {
+    chatInputFound = true;
+  }
+  
+  const uploadElement = document.querySelector(UPLOAD_FILE_INPUT_SELECTOR);
+  if (uploadElement) {
+    uploadElementFound = true;
+  }
+}
+
 window.addEventListener("load", () => {
-  console.log("[Script] Window 'load' event triggered.");
-  // WebSocket连接逻辑已移除
   createDownloadButton();
-
-  // 初始化tab状态为空闲
   updateTabStatus("idle");
+  checkElementImmediately();
+  startElementWatcher();
 
-  // 自动查找文件输入框并模拟拖拽上传图片
-  setTimeout(async () => {
-    upload_files();
-  }, 3000); // 延迟1秒，确保页面元素加载完毕
+  // 定期检查目标元素（每2秒检查一次，最多检查10次）
+  let checkCount = 0;
+  const maxChecks = 10;
+  let chatInputFound = false;
+  let uploadElementFound = false;
+  
+  const checkInterval = setInterval(() => {
+    checkCount++;
+    
+    const chatInputElement = document.querySelector(CHAT_INPUT_SELECTOR);
+    const uploadElement = document.querySelector(UPLOAD_FILE_INPUT_SELECTOR);
+    
+    if (chatInputElement && !chatInputFound) {
+      chatInputFound = true;
+    }
+    
+    if (uploadElement && !uploadElementFound) {
+      uploadElementFound = true;
+    }
+    
+    if ((chatInputFound && uploadElementFound) || checkCount >= maxChecks) {
+      clearInterval(checkInterval);
+    }
+  }, 2000);
 });
 
 // --- Cleanup ---
 window.addEventListener("beforeunload", () => {
-  console.log("[Script] Page is unloading. Cleaning up resources.");
   clearTimeout(imageCollectionTimer);
-  console.log("[Script] Image collection debounce timer cleared.");
-  // WebSocket关闭逻辑已移除
-
-  // 清理tab状态
   updateTabStatus("idle");
 });
 
