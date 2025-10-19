@@ -39,6 +39,7 @@ class Client:
     current_task_id: Optional[str] = None
     last_active: float = field(default_factory=time.time)
     url: Optional[str] = None
+    platform: Optional[str] = None  # 平台类型：doubao, qwen
 
     def update_activity(self):
         """更新客户端活动时间"""
@@ -83,9 +84,9 @@ class AppContext:
     tasks: Dict[str, Task] = field(default_factory=dict)
     round_robin_index: int = 0
 
-    def add_client(self, client_id: str, websocket: websockets.WebSocketServer):
-        self.clients[client_id] = Client(id=client_id, websocket=websocket)
-        logger.info(f"Client {client_id} added. Total clients: {len(self.clients)}")
+    def add_client(self, client_id: str, websocket: websockets.WebSocketServer, platform: str = None):
+        self.clients[client_id] = Client(id=client_id, websocket=websocket, platform=platform)
+        logger.info(f"Client {client_id} added (platform: {platform}). Total clients: {len(self.clients)}")
 
     def remove_client(self, client_id: str):
         if client_id in self.clients:
@@ -100,10 +101,18 @@ class AppContext:
                 f"Client {client_id} removed. Total clients: {len(self.clients)}"
             )
 
-    def get_idle_client(self) -> Optional[Client]:
+    def get_idle_client(self, platform: str = None) -> Optional[Client]:
         if not self.clients: return None
         client_ids = list(self.clients.keys())
         if not client_ids: return None
+
+        # 如果指定了平台，优先选择该平台的客户端
+        if platform:
+            platform_clients = [c for c in self.clients.values() 
+                               if c.platform == platform and c.status == ClientStatus.IDLE
+                               and hasattr(c.websocket, "state") and c.websocket.state == websockets.State.OPEN]
+            if platform_clients:
+                return platform_clients[0]
 
         start_index = self.round_robin_index
         for i in range(len(client_ids)):
@@ -217,8 +226,13 @@ async def websocket_handler(websocket, app_context: AppContext):
 
                 elif msg_type == "scriptReady":
                     url = data.get("url")
+                    platform = data.get("platform", "unknown")
                     if url:
+                        # 更新客户端的平台信息
+                        if client_id in app_context.clients:
+                            app_context.clients[client_id].platform = platform
                         app_context.handle_script_ready(client_id, url)
+                        logger.info(f"Client {client_id} script ready at {url} (platform: {platform})")
                     continue
                 
                 elif msg_type == "error":
@@ -259,11 +273,11 @@ async def send_to_client(websocket, message: str):
 # --- Main Async Entry Point & FastMCP Tools ---
 async def main_async():
     app_context = AppContext()
-    mcp = FastMCP(name="WebSocketMCP", json_response=True)
+    mcp = FastMCP(name="Omni-Adapter", json_response=True)
 
     @mcp.tool()
     async def draw_image(
-        ctx: Context, prompt: str, ratio: str = "2:3"
+        ctx: Context, prompt: str, ratio: str = "2:3", platform: str = None
     ) -> str:
         """
         文生图功能：根据文本提示词生成图片
@@ -278,6 +292,7 @@ async def main_async():
                 - "9:16" - 竖屏
                 - "4:3" - 标准横版
                 - "3:4" - 标准竖版
+            platform (str, optional): 指定使用的AI平台，可选 "doubao" 或 "qwen"。如果不指定，将使用任意可用的平台
         
         Returns:
             str: JSON格式的响应，包含以下字段：
@@ -296,7 +311,7 @@ async def main_async():
             app_context.check_timeouts()
             app_context.cleanup_disconnected_clients()
 
-            idle_client = app_context.get_idle_client()
+            idle_client = app_context.get_idle_client(platform)
             if not idle_client:
                 return json.dumps({"status": "error", "message": "No idle clients available"}, ensure_ascii=False)
             
@@ -339,7 +354,7 @@ async def main_async():
 
     @mcp.tool()
     async def edit_image(
-        ctx: Context, prompt: str, reference_picture: str, ratio: str = "2:3"
+        ctx: Context, prompt: str, reference_picture: str, ratio: str = "2:3", platform: str = None
     ) -> str:
         """
         图生图功能：根据参考图片和文本提示词生成或编辑图片
@@ -357,6 +372,7 @@ async def main_async():
                 - "9:16" - 竖屏
                 - "4:3" - 标准横版
                 - "3:4" - 标准竖版
+            platform (str, optional): 指定使用的AI平台，可选 "doubao" 或 "qwen"。如果不指定，将使用任意可用的平台
         
         Returns:
             str: JSON格式的响应，包含以下字段：
@@ -395,7 +411,7 @@ async def main_async():
             app_context.check_timeouts()
             app_context.cleanup_disconnected_clients()
 
-            idle_client = app_context.get_idle_client()
+            idle_client = app_context.get_idle_client(platform)
             if not idle_client:
                 return json.dumps({"status": "error", "message": "No idle clients available"}, ensure_ascii=False)
             
@@ -454,6 +470,7 @@ async def main_async():
                     - current_task: 当前正在执行的任务ID（如果有）
                     - last_active: 最后活动时间戳
                     - url: 客户端连接的页面URL
+                    - platform: 客户端平台类型（"doubao" 或 "qwen"）
                 - total_tasks: 任务总数
                 - tasks: 任务详细信息列表，每个任务包含：
                     - id: 任务唯一标识
@@ -472,7 +489,7 @@ async def main_async():
         """
         client_info = [{
             "id": c.id, "connected": c.websocket.state == websockets.State.OPEN, "status": c.status.value,
-            "current_task": c.current_task_id, "last_active": c.last_active, "url": c.url,
+            "current_task": c.current_task_id, "last_active": c.last_active, "url": c.url, "platform": c.platform,
         } for c in app_context.clients.values()]
 
         task_info = [{

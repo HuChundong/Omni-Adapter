@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Omni-Adapter (Qwen)",
+  "version": "1.0",
+  "description": "Omni-Adapter: Qwen platform integration for multi-platform image generation",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "webNavigation",
+    "alarms",
+    "scripting",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://chat.qwen.ai/*",
+    "https://*.qwen.ai/*",
+    "http://localhost:8080/*",
+    "ws://localhost:8080/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.qwen.ai/*", "https://*.qwen.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

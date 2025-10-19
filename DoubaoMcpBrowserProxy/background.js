@@ -188,13 +188,11 @@ function addDoubaoTab(tabId, url) {
     status: 'idle',
     lastUsed: Date.now()
   });
-  console.log(`[TabManager] Added tab ${tabId}, total tabs: ${doubaoTabs.size}`);
 }
 
 function removeDoubaoTab(tabId) {
   if (doubaoTabs.has(tabId)) {
     doubaoTabs.delete(tabId);
-    console.log(`[TabManager] Removed tab ${tabId}, remaining tabs: ${doubaoTabs.size}`);
   }
 }
 
@@ -204,7 +202,6 @@ function setTabStatus(tabId, status) {
     if (status === 'idle') {
       doubaoTabs.get(tabId).lastUsed = Date.now();
     }
-    console.log(`[TabManager] Tab ${tabId} status changed to ${status}`);
   }
 }
 
@@ -239,7 +236,6 @@ function dispatchTask(task) {
   } else {
     // 没有空闲tab，加入队列
     taskQueue.push(task);
-    console.log(`[TaskManager] Task queued. Queue length: ${taskQueue.length}`);
     return false;
   }
 }
@@ -292,13 +288,11 @@ function onTaskCompleted(tabId) {
 function connectWebSocket() {
     // 防止重复连接
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
-        console.log("[WebSocket] Connection already active");
         return;
     }
 
     chrome.storage.sync.get(['wsUrl'], (result) => {
         const websocketUrl = result.wsUrl || DEFAULT_WEBSOCKET_URL;
-        console.log(`[WebSocket] Connecting to ${websocketUrl}`);
 
         try {
             ws = new WebSocket(websocketUrl);
@@ -324,7 +318,6 @@ function setupWebSocketHandlers() {
  * WebSocket连接成功处理
  */
 function handleWebSocketOpen() {
-    console.log("[WebSocket] Connected successfully");
     clearTimeout(reconnectTimeout);
     reconnectTimeout = null;
     
@@ -336,7 +329,6 @@ function handleWebSocketOpen() {
  * WebSocket消息处理
  */
 function handleWebSocketMessage(event) {
-    console.log("[WebSocket] Received:", event.data);
     
     try {
         const message = JSON.parse(event.data);
@@ -366,7 +358,6 @@ function handleWebSocketError(error) {
  * WebSocket连接关闭处理
  */
 function handleWebSocketClose(event) {
-    console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason})`);
     ws = null;
     scheduleReconnect();
 }
@@ -382,7 +373,8 @@ function notifyAllTabsConnectionReady() {
                 sendWebSocketMessage({ 
                     type: 'scriptReady', 
                     url: tabInfo.url, 
-                    tabId: tab.id 
+                    tabId: tab.id,
+                    platform: 'doubao'
                 });
             }
         });
@@ -394,14 +386,11 @@ function notifyAllTabsConnectionReady() {
  */
 function scheduleReconnect() {
     if (reconnectTimeout === null) {
-        console.log(`[WebSocket] Scheduling reconnect in ${RECONNECT_DELAY_MS}ms...`);
         reconnectTimeout = setTimeout(() => {
-            console.log("[WebSocket] Executing reconnect...");
             reconnectTimeout = null;
             connectWebSocket();
         }, RECONNECT_DELAY_MS);
     } else {
-        console.log("[WebSocket] Reconnect already scheduled");
     }
 }
 
@@ -439,7 +428,6 @@ function getWebSocketStatus() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'COLLECTED_IMAGE_URLS') {
-        console.log('[Background] Received collected image URLs from content script:', message.urls);
         sendWebSocketMessage({ 
             type: 'collectedImageUrls', 
             commandId: message.commandId, // 添加commandId支持
@@ -448,7 +436,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
     } else if (message.type === 'TASK_COMPLETED') {
         // content script通知任务完成
-        console.log(`[Background] Task completed on tab ${sender.tab.id}`);
         onTaskCompleted(sender.tab.id);
         sendResponse({ success: true });
     } else if (message.type === 'TAB_STATUS_UPDATE') {
@@ -498,7 +485,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // 处理插件图标点击事件
 chrome.action.onClicked.addListener(async (tab) => {
-  console.log(`[Action] Plugin icon clicked on tab ${tab.id}`);
   
   try {
     // 检查是否在豆包页面
@@ -508,7 +494,6 @@ chrome.action.onClicked.addListener(async (tab) => {
         target: { tabId: tab.id },
         files: ['settings-panel.js']
       });
-      console.log(`[Action] Settings panel injected into tab ${tab.id}`);
     } else {
       // 如果不是豆包页面，打开新标签页
       chrome.tabs.create({ url: 'https://www.doubao.com' });
@@ -558,13 +543,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     // 如果没有剩余的豆包tab，关闭WebSocket但保持重连机制
     if (doubaoTabs.size === 0) {
       if (ws) {
-        console.log("[WebSocket] Closing connection (no more Doubao tabs)");
         ws.close();
       }
       // 保持重连机制工作，清空任务队列
       taskQueue = [];
       currentTabIndex = 0;
-      console.log("[WebSocket] Keeping reconnection active");
     }
   }
   

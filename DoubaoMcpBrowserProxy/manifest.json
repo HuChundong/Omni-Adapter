@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "DoubaoMcpBrowserProxy",
+  "name": "Omni-Adapter (Doubao)",
   "version": "2.0",
-  "description": "Enhances Doubao functionality",
+  "description": "Omni-Adapter: Doubao platform integration for multi-platform image generation",
   "permissions": [
     "cookies",
     "webNavigation",
