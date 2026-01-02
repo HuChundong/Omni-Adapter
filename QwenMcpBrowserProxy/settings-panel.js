@@ -114,6 +114,32 @@
           </div>
         </div>
 
+        <div class="setting-item" style="
+          margin-bottom: 12px;
+          padding: 12px;
+          border: 1px solid rgba(0,0,0,0.08);
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.7);
+          transition: all 0.2s ease;
+        ">
+          <h3 style="
+            color: #34495e;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+          ">图片处理设置</h3>
+          <label style="display: flex; align-items: center; font-weight: 500; color: #2c3e50; margin-bottom: 4px;">
+            <input type="checkbox" id="sendOriginalImage" style="
+              margin-right: 8px;
+              transform: scale(1.2);
+            ">
+            发送原图
+          </label>
+          <div style="color: #7f8c8d; font-size: 11px; margin-top: 4px; line-height: 1.3;">
+            开启后，收集图片时会自动去除 URL 中的图片处理参数（如 &x-oss-process=...），发送原始图片链接
+          </div>
+        </div>
+
         <button id="saveButton" style="
           width: 100%;
           padding: 8px 16px;
@@ -232,12 +258,13 @@
     async function saveOptions() {
       const wsUrl = document.getElementById('wsUrl').value;
       const autoRefreshEnabled = document.getElementById('autoRefreshEnabled').checked;
+      const sendOriginalImage = document.getElementById('sendOriginalImage').checked;
       const status = document.getElementById('status');
 
       try {
         // 直接使用Chrome API，不使用promisify
         await new Promise((resolve, reject) => {
-          chrome.storage.sync.set({ wsUrl, autoRefreshEnabled }, () => {
+          chrome.storage.sync.set({ wsUrl, autoRefreshEnabled, sendOriginalImage }, () => {
             if (chrome.runtime.lastError) {
               reject(chrome.runtime.lastError);
             } else {
@@ -268,7 +295,7 @@
       try {
         // 直接使用Chrome API，不使用promisify
         const result = await new Promise((resolve, reject) => {
-          chrome.storage.sync.get(["wsUrl", "autoRefreshEnabled"], (result) => {
+          chrome.storage.sync.get(["wsUrl", "autoRefreshEnabled", "sendOriginalImage"], (result) => {
             if (chrome.runtime.lastError) {
               reject(chrome.runtime.lastError);
             } else {
@@ -279,10 +306,13 @@
         
         document.getElementById('wsUrl').value = result.wsUrl || "ws://localhost:8080";
         document.getElementById('autoRefreshEnabled').checked = result.autoRefreshEnabled || false;
+        // 如果从未设置过，默认为 true
+        document.getElementById('sendOriginalImage').checked = result.sendOriginalImage !== undefined ? result.sendOriginalImage : true;
       } catch (error) {
         console.error("Failed to load options:", error);
         document.getElementById('wsUrl').value = "加载设置出错";
         document.getElementById('autoRefreshEnabled').checked = false;
+        document.getElementById('sendOriginalImage').checked = true; // 默认开启
       }
     }
 

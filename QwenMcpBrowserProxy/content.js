@@ -5,6 +5,9 @@ const IMAGE_COLLECTION_SETTLE_DELAY_MS = 3000; // 减少延迟
 // 自动刷新页面开关，默认关闭
 let autoRefreshEnabled = false;
 
+// 发送原图开关，默认开启
+let sendOriginalImage = true;
+
 // 图片收集相关
 let foundImageUrls = [];
 let processedUrls = new Set();
@@ -32,6 +35,41 @@ async function loadAutoRefreshSetting() {
     console.error("[AutoRefresh] Failed to load setting:", error);
     autoRefreshEnabled = false;
   }
+}
+
+// 从存储中加载发送原图设置
+async function loadSendOriginalImageSetting() {
+  try {
+    const result = await chrome.storage.sync.get(['sendOriginalImage']);
+    // 如果从未设置过，默认为 true
+    sendOriginalImage = result.sendOriginalImage !== undefined ? result.sendOriginalImage : true;
+  } catch (error) {
+    console.error("[SendOriginalImage] Failed to load setting:", error);
+    sendOriginalImage = true; // 默认开启
+  }
+}
+
+// 处理图片 URL，如果启用发送原图，去除 x-oss-process 参数
+function processImageUrl(url) {
+  if (!url) return url;
+  
+  if (sendOriginalImage) {
+    // 去除 &x-oss-process=image/resize,m_mfit,w_450,h_450 或类似的参数
+    try {
+      const urlObj = new URL(url);
+      // 移除 x-oss-process 查询参数
+      urlObj.searchParams.delete('x-oss-process');
+      const processedUrl = urlObj.toString();
+      console.log("[ImageCollection] Processed URL (removed x-oss-process):", processedUrl);
+      return processedUrl;
+    } catch (error) {
+      console.error("[ImageCollection] Failed to process URL:", error);
+      // 如果 URL 解析失败，尝试简单的字符串替换
+      return url.replace(/[&?]x-oss-process=[^&]*/gi, '');
+    }
+  }
+  
+  return url;
 }
 
 let extensionContextValid = true;
@@ -106,26 +144,41 @@ function sendCollectedImagesToBackground() {
   }
 
   if (foundImageUrls.length > 0) {
+    // 在最终发送之前处理 URL（如果启用发送原图，去除处理参数）
+    const processedImageUrls = foundImageUrls.map(url => processImageUrl(url));
+    
+    // 在控制台输出收集到的 URL，方便调试
+    console.log("[ImageCollection] Collected image URLs (original):", foundImageUrls);
+    if (processedImageUrls.some((url, index) => url !== foundImageUrls[index])) {
+      console.log("[ImageCollection] Processed URLs (removed x-oss-process):", processedImageUrls);
+    }
+    
     safeSendMessage({
       type: "COLLECTED_IMAGE_URLS",
-      urls: [...foundImageUrls],
+      urls: processedImageUrls,
     });
+  } else {
+    console.log("[ImageCollection] No image URLs collected");
   }
 
   foundImageUrls.length = 0;
   processedUrls.clear();
   
-  setTimeout(() => {
-    redirectToImageMode();
-  }, 1000);
+  // 只有在自动刷新启用时才重定向
+  if (autoRefreshEnabled) {
+    setTimeout(() => {
+      redirectToImageMode();
+    }, 1000);
+  }
 }
 
 function onImageFound(url) {
   if (findChatInput() !== null) {
     if (!processedUrls.has(url)) {
       processedUrls.add(url);
-      // 只保留最后一张图片，清空之前的
+      // 只保留最后一张图片，清空之前的（保持原始URL用于去重）
       foundImageUrls = [url];
+      console.log("[ImageCollection] Found new image URL:", url);
     }
     
     clearTimeout(imageCollectionTimer);
@@ -407,27 +460,104 @@ async function upload_files(url) {
   }
 }
 
+// 查找并点击可点击的元素（包括子元素）
+function clickElement(element) {
+  if (!element) return false;
+  
+  // 优先查找 button 或 a 标签
+  const buttonChild = element.querySelector('button, a');
+  if (buttonChild) {
+    buttonChild.click();
+    return true;
+  }
+  
+  // 如果没有找到 button/a，查找所有子元素，找到有点击事件监听器的元素
+  const allChildren = Array.from(element.querySelectorAll('*'));
+  const elementWithClickHandler = allChildren.find(el => {
+    // 检查元素是否有 onclick 属性或事件监听器
+    return el.onclick !== null || 
+           (el.getAttribute && el.getAttribute('onclick')) ||
+           el.style.cursor === 'pointer';
+  });
+  
+  if (elementWithClickHandler) {
+    elementWithClickHandler.click();
+    return true;
+  }
+  
+  // 如果都没找到，直接点击元素本身
+  element.click();
+  return true;
+}
+
 async function changeRatio(ratio) {
-  const triggerButton = document.querySelector(".chat-ratio-selector")?.closest("button[data-menu-trigger]");
-  if (!triggerButton) {
+  // 先查找比例选择按钮
+  let sizeSelectorBtn = document.querySelector(".size-selector-btn");
+  
+  // 如果没找到，尝试查找包含 size-selector-btn class 的按钮
+  if (!sizeSelectorBtn) {
+    sizeSelectorBtn = document.querySelector("button.size-selector-btn");
+  }
+  
+  // 如果还是没找到，尝试在 chat-input-feature-btn 附近查找
+  if (!sizeSelectorBtn) {
+    const featureBtn = document.querySelector(".chat-input-feature-btn");
+    if (featureBtn) {
+      const container = featureBtn.closest("div");
+      if (container) {
+        sizeSelectorBtn = container.querySelector(".size-selector-btn") || 
+                         container.querySelector("button.size-selector-btn");
+      }
+    }
+  }
+  
+  if (!sizeSelectorBtn) {
+    console.error("[Ratio] Size selector button not found");
     return false;
   }
 
-  triggerButton.click();
+  // 在比例选择按钮内部查找 ant-dropdown-trigger 子元素
+  const triggerContainer = sizeSelectorBtn.querySelector(".ant-dropdown-trigger");
+  
+  if (!triggerContainer) {
+    console.error("[Ratio] ant-dropdown-trigger not found inside size-selector-btn");
+    return false;
+  }
+
+  // 元素本身就是可点击的，直接点击
+  triggerContainer.click();
   await new Promise(r => setTimeout(r, 500));
 
-  const menu = document.querySelector('div[role="menu"][data-state="open"]');
+  // 查找可见的菜单，不依赖 data-state 属性
+  const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+  const menu = menus.find(m => {
+    const style = window.getComputedStyle(m);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  });
+  
   if (!menu) {
+    console.error("[Ratio] Menu not found after clicking trigger button");
     return false;
   }
   
-  const menuItem = Array.from(menu.querySelectorAll('[role="menuitem"]')).find(item => item.innerText.trim() === ratio);
+  // 遍历所有菜单项，检查每个子元素的文本内容来匹配比例，不依赖特定 class
+  const menuItems = Array.from(menu.querySelectorAll('li[role="menuitem"]'));
+  const menuItem = menuItems.find(item => {
+    // 遍历所有子元素（包括自身），检查文本内容是否包含比例
+    const allElements = [item, ...Array.from(item.querySelectorAll('*'))];
+    return allElements.some(el => {
+      const text = el.textContent || el.innerText || '';
+      return text.trim().includes(ratio);
+    });
+  });
+  
   if (menuItem) {
     menuItem.click();
     return true;
   }
   
-  triggerButton.click();
+  console.error(`[Ratio] Menu item with ratio "${ratio}" not found`);
+  triggerContainer.click(); // 关闭菜单
   return false;
 }
 
@@ -486,19 +616,35 @@ async function checkIfNeedRedirect() {
 }
 
 async function clickFunctionButton(functionName) {
-  // 首先点击返回按钮（如果存在且未禁用）
-  const backButton = document.querySelector('#chat-message-input-func-type');
-  if (backButton && !backButton.classList.contains('disabled')) {
-    backButton.click();
+  // 首先检查当前选中的功能
+  const currentFuncText = document.querySelector('.prompt-input-input-func-type-text');
+  
+  if (currentFuncText) {
+    const currentText = currentFuncText.innerText.trim();
+    // 如果当前功能匹配，不需要切换
+    if (currentText === functionName) {
+      return true;
+    }
+    // 如果当前功能不匹配，点击该元素返回到功能选择页面
+    currentFuncText.click();
     await new Promise(r => setTimeout(r, 500));
   }
   
   // 查找指定功能的按钮
-  const button = Array.from(document.querySelectorAll("button.chat-prompt-suggest-button.normal"))
-    .find(btn => {
-      const textDiv = btn.querySelector('div');
-      return textDiv && textDiv.innerText.trim() === functionName;
+  // 功能按钮是 .chat-prompt-suggest-button，功能文本在内部的 div 中
+  const buttons = Array.from(document.querySelectorAll('.chat-prompt-suggest-button'));
+  const button = buttons.find(btn => {
+    // 跳过 disabled 的按钮
+    if (btn.classList.contains('disabled')) {
+      return false;
+    }
+    // 查找内部包含功能文本的 div
+    const divs = btn.querySelectorAll('div');
+    return Array.from(divs).some(div => {
+      const text = div.innerText.trim();
+      return text === functionName;
     });
+  });
 
   if (button) {
     button.click();
@@ -511,7 +657,17 @@ async function clickFunctionButton(functionName) {
 
 
 async function sendMessage() {
-  const sendButton = document.getElementById("send-message-button");
+  // 使用新的选择器查找发送按钮
+  let sendButton = document.querySelector("button.send-button");
+  
+  // 如果没找到，尝试通过父容器查找
+  if (!sendButton) {
+    const container = document.querySelector(".chat-prompt-send-button");
+    if (container) {
+      sendButton = container.querySelector("button.send-button");
+    }
+  }
+  
   if (sendButton && !sendButton.disabled) {
     sendButton.click();
     return true;
@@ -523,6 +679,8 @@ window.addEventListener("load", () => {
   updateTabStatus("idle");
   // 加载自动刷新设置
   loadAutoRefreshSetting();
+  // 加载发送原图设置
+  loadSendOriginalImageSetting();
 });
 
 window.addEventListener("beforeunload", () => {
